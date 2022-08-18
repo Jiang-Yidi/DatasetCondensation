@@ -147,7 +147,7 @@ def main():
             ''' Train synthetic data '''
             net = get_network(args.model, channel, num_classes, im_size).to(args.device) # get a random model
             net.train()
-            net_parameters = list(net.parameters())
+            #net_parameters = list(net.parameters())
             
             ##sam or not
             use_sam_optim = True
@@ -187,6 +187,11 @@ def main():
                             module.eval() # fix mu and sigma of every BatchNorm layer
 
 
+                net_sam = copy.deepcopy(net)
+                base_opt = torch.optim.SGD
+                optim = SAM(net_sam.parameters(), base_opt,lr=args.lr_net, rho=args.rho)
+
+
                 ''' update synthetic data '''
                 loss = torch.tensor(0.0).to(args.device)
                 for c in range(num_classes):
@@ -200,8 +205,8 @@ def main():
                         img_real = DiffAugment(img_real, args.dsa_strategy, seed=seed, param=args.dsa_param)
                         img_syn = DiffAugment(img_syn, args.dsa_strategy, seed=seed, param=args.dsa_param)
 
-                    output_real = net(img_real)
-                    loss_real = criterion(output_real, lab_real)
+                    #output_real = net(img_real)
+                    #loss_real = criterion(output_real, lab_real)
                     
                     
                     if use_sam_gradient:
@@ -210,18 +215,22 @@ def main():
                         #base_optim = torch.optim.SGD
                         #optim = SAM(net_parameters,grad,base_optim,lr=args.lr_net, rho=args.rho)
                         #optim.first_step(zero_grad=True)
-
+                        
+                        output_real = net_sam(img_real)
+                        loss_real = criterion(output_real, lab_real)
                         loss_real.backward()
-                        optimizer_net.first_step(zero_grad=True)
-                        loss_second = criterion(net(img_real),lab_real)
+                        optim.first_step(zero_grad=True)
+                        loss_second = criterion(net_sam(img_real),lab_real)
+                        net_parameters = list(net_sam.parameters())
                         gw_real = torch.autograd.grad(loss_second, net_parameters)
-                        optimizer_net.second_step(zero_grad=True,update=False)
+                        optim.second_step(zero_grad=True,update=False)
                     else:
                         gw_real = torch.autograd.grad(loss_real, net_parameters)
 
                         
                     gw_real = list((_.detach().clone() for _ in gw_real))
 
+                    net_parameters = list(net.parameters())
                     output_syn = net(img_syn)
                     loss_syn = criterion(output_syn, lab_syn)
                     gw_syn = torch.autograd.grad(loss_syn, net_parameters, create_graph=True)
