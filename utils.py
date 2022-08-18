@@ -294,6 +294,51 @@ def get_loops(ipc):
 
 
 
+def epoch_sam(mode, dataloader, net, optimizer, criterion, args, aug):
+    loss_avg, acc_avg, num_exp = 0, 0, 0
+    net = net.to(args.device)
+    criterion = criterion.to(args.device)
+
+    if mode == 'train':
+        net.train()
+    else:
+        net.eval()
+
+    for i_batch, datum in enumerate(dataloader):
+        img = datum[0].float().to(args.device)
+        if aug:
+            if args.dsa:
+                img = DiffAugment(img, args.dsa_strategy, param=args.dsa_param)
+            else:
+                img = augment(img, args.dc_aug_param, device=args.device)
+        lab = datum[1].long().to(args.device)
+        n_b = lab.shape[0]
+
+        output = net(img)
+        loss = criterion(output, lab)
+        acc = np.sum(np.equal(np.argmax(output.cpu().data.numpy(), axis=-1), lab.cpu().data.numpy()))
+
+        loss_avg += loss.item()*n_b
+        acc_avg += acc
+        num_exp += n_b
+
+        if mode == 'train':
+            optimizer.zero_grad()
+            loss.backward()
+            #optimizer.step()
+            ##SAM first gradient
+            optimizer.first_step(zero_grad=True)
+            ##second gradient
+            criterion(net(img), lab).backward()
+            optimizer.second_step(zero_grad=True)
+
+    loss_avg /= num_exp
+    acc_avg /= num_exp
+
+    return loss_avg, acc_avg
+
+
+
 def epoch(mode, dataloader, net, optimizer, criterion, args, aug):
     loss_avg, acc_avg, num_exp = 0, 0, 0
     net = net.to(args.device)

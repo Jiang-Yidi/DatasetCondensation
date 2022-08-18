@@ -6,8 +6,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torchvision.utils import save_image
-from utils import get_loops, get_dataset, get_network, get_eval_pool, evaluate_synset, get_daparam, match_loss, get_time, TensorDataset, epoch, DiffAugment, ParamDiffAug
-
+from utils import get_loops, get_dataset, get_network, get_eval_pool, evaluate_synset, get_daparam, match_loss, get_time, TensorDataset, epoch, epoch_sam, DiffAugment, ParamDiffAug
+from sam import SAM
 
 def main():
 
@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--ipc', type=int, default=1, help='image(s) per class')
     parser.add_argument('--eval_mode', type=str, default='S', help='eval_mode') # S: the same to training model, M: multi architectures,  W: net width, D: net depth, A: activation function, P: pooling layer, N: normalization layer,
     parser.add_argument('--num_exp', type=int, default=5, help='the number of experiments')
-    parser.add_argument('--num_eval', type=int, default=20, help='the number of evaluating randomly initialized models')
+    parser.add_argument('--num_eval', type=int, default=0, help='the number of evaluating randomly initialized models')
     parser.add_argument('--epoch_eval_train', type=int, default=300, help='epochs to train a model with synthetic data')
     parser.add_argument('--Iteration', type=int, default=1000, help='training iterations')
     parser.add_argument('--lr_img', type=float, default=0.1, help='learning rate for updating synthetic images')
@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--data_path', type=str, default='data', help='dataset path')
     parser.add_argument('--save_path', type=str, default='result', help='path to save results')
     parser.add_argument('--dis_metric', type=str, default='ours', help='distance metric')
+    parser.add_argument('--rho', type=float, default=0.01)
 
     args = parser.parse_args()
     args.outer_loop, args.inner_loop = get_loops(args.ipc)
@@ -147,7 +148,19 @@ def main():
             net = get_network(args.model, channel, num_classes, im_size).to(args.device) # get a random model
             net.train()
             net_parameters = list(net.parameters())
-            optimizer_net = torch.optim.SGD(net.parameters(), lr=args.lr_net)  # optimizer_img for synthetic data
+            
+            ##sam or not
+            use_sam_optim = True
+            use_sam_gradient = True
+
+            if use_sam_optim:
+                ##using SAM optimizer
+                from sam import SAM
+                base_optim = torch.optim.SGD
+                optimizer_net = SAM(net.parameters(), base_optim,lr=args.lr_net, rho=args.rho)
+            else:
+                optimizer_net = torch.optim.SGD(net.parameters(), lr=args.lr_net)  # optimizer_img for synthetic data
+
             optimizer_net.zero_grad()
             loss_avg = 0
             args.dc_aug_param = None  # Mute the DC augmentation when learning synthetic data (in inner-loop epoch function) in oder to be consistent with DC paper.
@@ -189,12 +202,30 @@ def main():
 
                     output_real = net(img_real)
                     loss_real = criterion(output_real, lab_real)
-                    gw_real = torch.autograd.grad(loss_real, net_parameters)
+                    
+                    
+                    if use_sam_gradient:
+                        #from sam_gradient import SAM
+                        #grad = torch.autograd.grad(loss_real, net_parameters)
+                        #base_optim = torch.optim.SGD
+                        #optim = SAM(net_parameters,grad,base_optim,lr=args.lr_net, rho=args.rho)
+                        #optim.first_step(zero_grad=True)
+
+                        loss_real.backward()
+                        optimizer_net.first_step(zero_grad=True)
+                        loss_second = criterion(net(img_real),lab_real)
+                        gw_real = torch.autograd.grad(loss_second, net_parameters)
+                        optimizer_net.second_step(zero_grad=True,update=False)
+                    else:
+                        gw_real = torch.autograd.grad(loss_real, net_parameters)
+
+                        
                     gw_real = list((_.detach().clone() for _ in gw_real))
 
                     output_syn = net(img_syn)
                     loss_syn = criterion(output_syn, lab_syn)
                     gw_syn = torch.autograd.grad(loss_syn, net_parameters, create_graph=True)
+
 
                     loss += match_loss(gw_syn, gw_real, args)
 
@@ -212,7 +243,7 @@ def main():
                 dst_syn_train = TensorDataset(image_syn_train, label_syn_train)
                 trainloader = torch.utils.data.DataLoader(dst_syn_train, batch_size=args.batch_train, shuffle=True, num_workers=0)
                 for il in range(args.inner_loop):
-                    epoch('train', trainloader, net, optimizer_net, criterion, args, aug = True if args.dsa else False)
+                    epoch_sam('train', trainloader, net, optimizer_net, criterion, args, aug = True if args.dsa else False)
 
 
             loss_avg /= (num_classes*args.outer_loop)
